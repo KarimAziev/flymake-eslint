@@ -25,8 +25,6 @@
 
 ;;;; Requirements
 
-(require 'cl-lib)
-
 ;;;; Customization
 
 (defgroup flymake-eslint nil
@@ -35,8 +33,7 @@
   :prefix "flymake-eslint-")
 
 (defcustom flymake-eslint-executable-name "eslint"
-  "Name of executable to run when checker is called.
-Must be present in variable `exec-path'."
+  "Name of executable to run when checker is called."
   :type 'string
   :group 'flymake-eslint)
 
@@ -45,114 +42,131 @@ Must be present in variable `exec-path'."
   :type '(choice string (repeat string))
   :group 'flymake-eslint)
 
-(defcustom flymake-eslint-show-rule-name t
-  "When non-nil show eslint rule name in flymake diagnostic."
-  :type 'boolean
-  :group 'flymake-eslint)
-
-(defcustom flymake-eslint-defer-binary-check nil
-  "Defer the eslint binary presence check.
-When non-nil, the initial check, which ensures that eslint binary
-is present, is disabled.  Instead, this check is performed during
-backend execution.
-
-Useful when the value of variable `exec-path' is set dynamically
-and the location of eslint might not be known ahead of time."
-  :type 'boolean
-  :group 'flymake-eslint)
-
 (defcustom flymake-eslint-project-root nil
-  "Buffer-local.
-Set to a filesystem path to use that path as the current working
-directory of the linting process."
+  "Project root directory."
   :type 'string
   :group 'flymake-eslint)
 
-;;;; Variables
-
 (defvar flymake-eslint--message-regexp
-  (rx bol (* space) (group (+ num)) ":" (group (+ num)) ; line:col
-      (+ space) (group (or "error" "warning"))          ; type
-      (+ space) (group (+? any))                        ; message
-      (>= 2 space) (group (* any)) eol)                 ; rule name
+  "^[[:space:]]*\\([[:digit:]]+\\):\\([[:digit:]]+\\)[[:space:]]+\\(\\(?:error\\|warning\\)\\)[[:space:]]+\\(.+?\\)[[:space:]]\\{2,\\}\\(.*\\)$"
   "Regexp to match eslint messages.")
 
+(defvar flymake-eslint-bin nil)
 (defvar-local flymake-eslint--process nil
-  "Handle to the linter process for the current buffer.")
+  "Eslint process for the current buffer.")
 
-;;;; Functions
+(defun flymake-eslint-find-eslint ()
+  "Search for local eslint."
+  (or (when-let* ((root (locate-dominating-file
+                         (or (buffer-file-name)
+                             default-directory)
+                         "node_modules"))
+                  (eslint (and root
+                               (expand-file-name
+                                (concat "node_modules/.bin/"
+                                        (or flymake-eslint-executable-name
+                                            "eslint"))
+                                root))))
+        (when (and (file-exists-p eslint)
+                   (file-executable-p eslint))
+          eslint))
+      (executable-find "eslint")))
 
-;;;;; Public
+(defun flymake-eslint-find-project-root ()
+  "Search for local eslint."
+  (locate-dominating-file
+   (or (buffer-file-name)
+       default-directory)
+   "package.json"))
+
 
 ;;;###autoload
-(defun flymake-eslint-enable ()
-  "Enable Flymake and flymake-eslint.
-Add this function to some js major mode hook."
+(defun flymake-eslint-print-config ()
+  "Print eslint config for current file."
   (interactive)
-  (unless flymake-eslint-defer-binary-check
-    (flymake-eslint--ensure-binary-exists))
-  (make-local-variable 'flymake-eslint-project-root)
-  (flymake-mode t)
-  (add-hook 'flymake-diagnostic-functions 'flymake-eslint--checker nil t))
+  (require 'json)
+  (let* ((cmd (flymake-eslint-find-eslint))
+         (file (or buffer-file-name (car (directory-files default-directory
+                                                          nil
+                                                          "\\.[jct]s[x]?$"
+                                                          t)))))
+    (with-current-buffer (get-buffer-create
+                          (format "*flymake-eslint-config-%s*"
+                                  cmd))
+      (setq buffer-read-only nil)
+      (erase-buffer)
+      (let ((status (call-process cmd nil t nil "--print-config" file)))
+        (goto-char (point-min))
+        (when (= 0 status)
+          (when-let ((config (when (fboundp 'json-read)
+                               (json-read))))
+            (delete-region (point-min)
+                           (point-max))
+            (insert (pp-to-string config)))))
+      (pp-buffer)
+      (delay-mode-hooks (emacs-lisp-mode)
+                        (font-lock-ensure))
+      (setq buffer-undo-list nil)
+      (set-buffer-modified-p nil)
+      (setq buffer-read-only t)
+      (unless (get-buffer-window (current-buffer))
+        (pop-to-buffer (current-buffer))))))
 
-;;;;; Private
-
-(defun flymake-eslint--executable-args ()
-  "Get additional arguments for `flymake-eslint-executable-name'.
-Return `flymake-eslint-executable-args' value and ensure that
-this is a list."
-  (if (listp flymake-eslint-executable-args)
-      flymake-eslint-executable-args
-    (list flymake-eslint-executable-args)))
-
-(defun flymake-eslint--ensure-binary-exists ()
-  "Ensure that `flymake-eslint-executable-name' exists.
-Otherwise, throw an error and tell Flymake to disable this
-backend if `flymake-eslint-executable-name' can't be found in
-variable `exec-path'"
-  (unless (executable-find flymake-eslint-executable-name)
-    (let ((option 'flymake-eslint-executable-name))
-      (error "Can't find \"%s\" in exec-path - try to configure `%s'"
-             (symbol-value option) option))))
 
 (defun flymake-eslint--report (eslint-stdout-buffer source-buffer)
   "Create Flymake diag messages from contents of ESLINT-STDOUT-BUFFER.
-They are reported against SOURCE-BUFFER.  Return a list of
-results."
+They are reported against SOURCE-BUFFER.
+Return a list of results."
   (with-current-buffer eslint-stdout-buffer
-    ;; start at the top and check each line for an eslint message
     (goto-char (point-min))
     (if (looking-at-p "Error:")
-        (pcase-let ((`(,beg . ,end) (with-current-buffer source-buffer
-                                      (cons (point-min) (point-max))))
+        (pcase-let ((`(,beg . ,end)
+                     (with-current-buffer source-buffer
+                       (cons (point-min)
+                             (point-max))))
                     (msg (thing-at-point 'line t)))
           (list (flymake-make-diagnostic source-buffer beg end :error msg)))
-      (cl-loop
-       until (eobp)
-       when (looking-at flymake-eslint--message-regexp)
-       collect (let* ((row (string-to-number (match-string 1)))
-                      (column (string-to-number (match-string 2)))
-                      (type (match-string 3))
-                      (msg (match-string 4))
-                      (lint-rule (match-string 5))
-                      (msg-text (concat (format "%s: %s" type msg)
-                                        (when flymake-eslint-show-rule-name
-                                          (format " [%s]" lint-rule))))
-                      (type-symbol (pcase type ("warning" :warning) (_ :error)))
-                      (src-pos (flymake-diag-region source-buffer row column)))
-                 ;; new Flymake diag message
-                 (flymake-make-diagnostic
-                  source-buffer
-                  (car src-pos)
-                  ;; buffer might have changed size
-                  (min (buffer-size source-buffer) (cdr src-pos))
-                  type-symbol
-                  msg-text
-                  (list :rule-name lint-rule)))
-       do (forward-line 1)))))
+      (let ((current nil))
+        (while
+            (not
+             (eobp))
+          (if
+              (looking-at flymake-eslint--message-regexp)
+              (progn
+                (setq current
+                      (cons
+                       (let* ((row
+                               (string-to-number
+                                (match-string 1)))
+                              (column
+                               (string-to-number
+                                (match-string 2)))
+                              (type
+                               (match-string 3))
+                              (msg
+                               (match-string 4))
+                              (lint-rule
+                               (match-string 5))
+                              (msg-text
+                               (format "%s: %s [%s]" type msg lint-rule))
+                              (type-symbol
+                               (if
+                                   (equal type '"warning")
+                                   (let nil :warning)
+                                 (let nil :error)))
+                              (src-pos
+                               (flymake-diag-region source-buffer row column)))
+                         (flymake-make-diagnostic source-buffer
+                                                  (car src-pos)
+                                                  (min
+                                                   (buffer-size source-buffer)
+                                                   (cdr src-pos))
+                                                  type-symbol msg-text
+                                                  (list :rule-name lint-rule)))
+                       current))))
+          (forward-line 1))
+        (nreverse current)))))
 
-;; Heavily based on the example found at
-;; https://www.gnu.org/software/emacs/manual/html_node/flymake/An-annotated-example-backend.html
 (defun flymake-eslint--create-process (source-buffer callback)
   "Create linter process for SOURCE-BUFFER.
 CALLBACK is invoked once linter has finished the execution.
@@ -160,27 +174,26 @@ CALLBACK accepts a buffer containing stdout from linter as its
 argument."
   (when (process-live-p flymake-eslint--process)
     (kill-process flymake-eslint--process))
-  (let ((default-directory (or flymake-eslint-project-root default-directory)))
+  (let* ((default-directory (or flymake-eslint-project-root default-directory))
+         (program (flymake-eslint-find-eslint)))
     (setq flymake-eslint--process
           (make-process
            :name "flymake-eslint"
-           :connection-type 'pipe
            :noquery t
+           :connection-type 'pipe
            :buffer (generate-new-buffer " *flymake-eslint*")
-           :command `(,flymake-eslint-executable-name
+           :command `(,program
                       "--no-color" "--no-ignore" "--stdin" "--stdin-filename"
                       ,(buffer-file-name source-buffer)
-                      ,@(flymake-eslint--executable-args))
+                      ,@(if (listp flymake-eslint-executable-args)
+                            flymake-eslint-executable-args
+                          (list flymake-eslint-executable-args)))
            :sentinel
-           (lambda (proc &rest ignored)
-             ;; do stuff upon child process termination
+           (lambda (proc &rest _ignored)
              (when (and (eq 'exit (process-status proc))
-                        ;; make sure we're not using a deleted buffer
                         (buffer-live-p source-buffer)
-                        ;; make sure we're using the latest lint process
                         (eq proc (buffer-local-value 'flymake-eslint--process
                                                      source-buffer)))
-               ;; read from eslint output then destroy temp buffer when done
                (let ((proc-buffer (process-buffer proc)))
                  (funcall callback proc-buffer)
                  (kill-buffer proc-buffer))))))))
@@ -188,8 +201,6 @@ argument."
 (defun flymake-eslint--check-and-report (source-buffer report-fn)
   "Run eslint against SOURCE-BUFFER.
 Use REPORT-FN to report results."
-  (when flymake-eslint-defer-binary-check
-    (flymake-eslint--ensure-binary-exists))
   (flymake-eslint--create-process
    source-buffer
    (lambda (eslint-stdout)
@@ -203,6 +214,17 @@ Use REPORT-FN to report results."
 Report results using REPORT-FN.  All other parameters are
 currently ignored."
   (flymake-eslint--check-and-report (current-buffer) report-fn))
+
+;;;###autoload
+(defun flymake-eslint-enable ()
+  "Enable Flymake and flymake-eslint.
+Add this function to some js major mode hook."
+  (interactive)
+  (when (and buffer-file-name
+             (flymake-eslint-find-eslint))
+    (make-local-variable 'flymake-eslint-project-root)
+    (add-hook 'flymake-diagnostic-functions 'flymake-eslint--checker nil t)))
+
 
 ;;;; Footer
 
