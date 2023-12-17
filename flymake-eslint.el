@@ -56,7 +56,7 @@
   "Eslint process for the current buffer.")
 
 (defun flymake-eslint-find-eslint ()
-  "Search for local eslint."
+  "Locate the eslint executable within a project or system-wide."
   (or (when-let* ((root (locate-dominating-file
                          (or (buffer-file-name)
                              default-directory)
@@ -73,7 +73,7 @@
       (executable-find "eslint")))
 
 (defun flymake-eslint-find-project-root ()
-  "Search for local eslint."
+  "Locate the nearest \"package.json\" to determine project root."
   (locate-dominating-file
    (or (buffer-file-name)
        default-directory)
@@ -88,7 +88,7 @@
   (let* ((cmd (flymake-eslint-find-eslint))
          (file (or buffer-file-name (car (directory-files default-directory
                                                           nil
-                                                          "\\.[jct]s[x]?$"
+                                                          "\\.[jctm]s[x]?\\'"
                                                           t)))))
     (with-current-buffer (get-buffer-create
                           (format "*flymake-eslint-config-%s*"
@@ -98,8 +98,9 @@
       (let ((status (call-process cmd nil t nil "--print-config" file)))
         (goto-char (point-min))
         (when (= 0 status)
-          (when-let ((config (when (fboundp 'json-read)
-                               (json-read))))
+          (when-let ((config
+                      (when (fboundp 'json-read)
+                        (json-read))))
             (delete-region (point-min)
                            (point-max))
             (insert (pp-to-string config)))))
