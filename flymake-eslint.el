@@ -1,11 +1,15 @@
-;;; flymake-eslint.el --- A Flymake backend for Javascript using eslint  -*- lexical-binding: t; -*-
+;;; flymake-eslint.el --- A Flymake backend for Javascript using eslint -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2016 Dan Orzechowski
 
 ;; Version: 1.6.0
 ;; Author: Dan Orzechowski
 ;; Contributor: Terje Larsen
-;; URL: https://github.com/orzechowskid/flymake-eslint
+;;              Karim Aziiev <karim.aziiev@gmail.com>
+;; URL: https://github.com/KarimAziev/flymake-eslint
 ;; Package-Requires: ((emacs "26.1"))
 ;; Keywords: languages, tools
+;; SPDX-License-Identifier: MIT
 
 ;;; Commentary:
 
@@ -19,13 +23,7 @@
 ;; customization group: view and modify them with the M-x customize-group RET
 ;; flymake-eslint RET.
 
-;; License: MIT
-
 ;;; Code:
-
-;;;; Requirements
-
-;;;; Customization
 
 (defgroup flymake-eslint nil
   "Flymake checker for Javascript using eslint."
@@ -224,11 +222,7 @@ Add this function to some js major mode hook."
   (when (and buffer-file-name
              (flymake-eslint-find-eslint))
     (make-local-variable 'flymake-eslint-project-root)
-    (add-hook 'flymake-diagnostic-functions 'flymake-eslint--checker nil t)))
-
-
-;;;; Footer
+    (add-hook 'flymake-diagnostic-functions #'flymake-eslint--checker nil t)))
 
 (provide 'flymake-eslint)
-
 ;;; flymake-eslint.el ends here
