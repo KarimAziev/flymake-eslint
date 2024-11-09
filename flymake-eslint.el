@@ -96,7 +96,7 @@
       (let ((status (call-process cmd nil t nil "--print-config" file)))
         (goto-char (point-min))
         (when (= 0 status)
-          (when-let ((config
+          (when-let* ((config
                       (when (fboundp 'json-read)
                         (json-read))))
             (delete-region (point-min)
